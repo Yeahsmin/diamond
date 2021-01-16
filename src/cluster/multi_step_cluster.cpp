@@ -57,7 +57,9 @@ vector<int> MultiStep::cluster(DatabaseFile& db, const BitVector* filter) {
 	opt.consumer = &nb;
 	opt.db_filter = filter;
 
+	task_timer alignment;
 	Workflow::Search::run(opt);
+	message_stream << "Alignment Time = " << alignment.get() << "s" << endl;
 	
 	/*
 	auto lo = nb.dSet.getListOfSets();
