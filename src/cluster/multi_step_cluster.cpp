@@ -20,6 +20,8 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 #include <unordered_map>
 
 using namespace std;
+task_timer time_alignment;
+double timer = 0;
 
 namespace Workflow { namespace Cluster {
 	
@@ -57,9 +59,12 @@ vector<int> MultiStep::cluster(DatabaseFile& db, const BitVector* filter) {
 	opt.consumer = &nb;
 	opt.db_filter = filter;
 
-	task_timer alignment;
+	time_alignment.go();
 	Workflow::Search::run(opt);
-	message_stream << "Alignment Time = " << alignment.get() << "s" << endl;
+	time_alignment.finish();
+	timer += time_alignment.get();
+	message_stream << "Alignment Time = " << timer << "s" << endl;
+
 	
 	/*
 	auto lo = nb.dSet.getListOfSets();
