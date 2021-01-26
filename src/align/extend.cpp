@@ -100,6 +100,7 @@ vector<Match> extend(
 	const vector<uint32_t>& target_block_ids,
 	const vector<TargetScore>& target_scores)
 {
+	const unsigned UNIFIED_TARGET_LEN = 50;
 	const unsigned contexts = align_mode.query_contexts;
 	vector<sequence> query_seq;
 	vector<Bias_correction> query_cb;
@@ -110,6 +111,7 @@ vector<Match> extend(
 
 	for (unsigned i = 0; i < contexts; ++i)
 		query_seq.push_back(query_seqs::get()[query_id*contexts + i]);
+	const unsigned query_len = (unsigned)query_seq.front().length();
 
 	task_timer timer(flags & DP::PARALLEL ? config.target_parallel_verbosity : UINT_MAX);
 	if (Stats::CBS::hauser(config.comp_based_stats)) {
@@ -129,8 +131,15 @@ vector<Match> extend(
 	const size_t target_count = target_block_ids.size();
 	const size_t chunk_size = ranking_chunk_size(target_count);
 	vector<TargetScore>::const_iterator i0 = target_scores.cbegin(), i1 = std::min(i0 + chunk_size, target_scores.cend());
-	/*if (config.toppercent == 100.0)
-		while (i1 < target_scores.cend() && i1->score >= relaxed_cutoff && size_t(i1 - i0) < config.max_alignments) ++i1;*/
+
+	if (config.toppercent == 100.0) {
+		while (i1 < target_scores.cend() && score_matrix.evalue(i1->score, query_len, UNIFIED_TARGET_LEN) <= config.max_evalue) i1 += 16;
+		//while (i1 < target_scores.cend() && i1->score >= relaxed_cutoff && size_t(i1 - i0) < config.max_alignments) ++i1;
+	}
+
+#ifdef EVAL_TARGET
+	while (i1 < target_scores.cend() && i1->evalue <= config.max_evalue && size_t(i1 - i0) < config.max_alignments) ++i1;
+#endif
 	const int low_score = config.query_memory ? memory->low_score(query_id) : 0;
 	const size_t previous_count = config.query_memory ? memory->count(query_id) : 0;
 	bool first_round_traceback = config.min_id > 0 || config.query_cover > 0 || config.subject_cover > 0;
@@ -210,7 +219,7 @@ vector<Match> extend(const Parameters &params, size_t query_id, hit* begin, hit*
 	TLS_FIX_S390X FlatArray<SeedHit> seed_hits;
 	thread_local vector<uint32_t> target_block_ids;
 	thread_local vector<TargetScore> target_scores;
-	load_hits(begin, end, seed_hits, target_block_ids, target_scores);
+	load_hits(begin, end, seed_hits, target_block_ids, target_scores, (unsigned)query_seqs::get()[query_id * align_mode.query_contexts].length());
 	stat.inc(Statistics::TARGET_HITS0, target_block_ids.size());
 	stat.inc(Statistics::TIME_LOAD_HIT_TARGETS, timer.microseconds());
 	timer.finish();
