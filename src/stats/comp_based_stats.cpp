@@ -326,12 +326,10 @@ s_GetMatrixScoreProbs(double** scoreProb, int* obs_min, int* obs_max,
 }
 
 void
-Blast_FreqRatioToScore(double** matrix, int rows, int cols, double Lambda)
+Blast_FreqRatioToScore(double** matrix, size_t rows, size_t cols, double Lambda)
 {
-    int i;
-    for (i = 0; i < rows; i++) {
-        int j;
-        for (j = 0; j < cols; j++) {
+    for (size_t i = 0; i < rows; i++) {
+        for (size_t j = 0; j < cols; j++) {
             if (0.0 == matrix[i][j]) {
                 matrix[i][j] = COMPO_SCORE_MIN;
             }
@@ -343,18 +341,16 @@ Blast_FreqRatioToScore(double** matrix, int rows, int cols, double Lambda)
 }
 
 void
-s_RoundScoreMatrix(int** matrix, int rows, int cols,
+s_RoundScoreMatrix(int** matrix, size_t rows, size_t cols,
     double** floatScoreMatrix)
 {
-    int p, c; /*indices over positions and characters*/
-
-    for (p = 0; p < rows; p++) {
-        for (c = 0; c < cols; c++) {
+    for (size_t p = 0; p < rows; p++) {
+        for (size_t c = 0; c < cols; c++) {
             if (floatScoreMatrix[p][c] < INT_MIN) {
                 matrix[p][c] = INT_MIN;
             }
             else {
-                matrix[p][c] = std::round(floatScoreMatrix[p][c]);
+                matrix[p][c] = (int)std::round(floatScoreMatrix[p][c]);
             }
         }
     }
@@ -436,13 +432,12 @@ s_ScaleSquareMatrix(int** matrix, int alphsize,
     double Lambda, const double(&freq_ratios)[NCBI_ALPH][NCBI_ALPH])
 {
     double** scores;     /* a double precision matrix of scores */
-    int i;                /* iteration index */
 
     scores = Nlm_DenseMatrixNew(alphsize, alphsize);
     if (scores == 0) return -1;
 
-    for (i = 0; i < TRUE_AA; i++) {
-        for (int j = 0; j < TRUE_AA; ++j)
+    for (size_t i = 0; i < TRUE_AA; i++) {
+        for (size_t j = 0; j < TRUE_AA; ++j)
             scores[i][j] = freq_ratios[ALPH_TO_NCBI[i]][ALPH_TO_NCBI[j]];
         //memcpy(scores[i], freq_ratios[i], alphsize * sizeof(double));
     }
@@ -548,12 +543,12 @@ double ideal_lambda(const int** matrix) {
     double* scoreArray;
     double bg[TRUE_AA];
     double s = 0.0;
-    for (int i = 0; i < TRUE_AA; ++i) {
+    for (size_t i = 0; i < TRUE_AA; ++i) {
         int j = value_traits.from_char(Robinson_prob[i].first);
         bg[j] = Robinson_prob[i].second;
         s += bg[j];
     }
-    for (int i = 0; i < TRUE_AA; ++i)
+    for (size_t i = 0; i < TRUE_AA; ++i)
         bg[i] /= s;
 
     int out_of_memory = s_GetMatrixScoreProbs(&scoreArray, &obs_min, &obs_max, matrix, TRUE_AA, bg, bg);

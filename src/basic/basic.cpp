@@ -28,7 +28,7 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 #include "sequence.h"
 #include "masking.h"
 
-const char* Const::version_string = "2.0.6";
+const char* Const::version_string = "2.0.7";
 const char* Const::program_name = "diamond";
 const char* Const::id_delimiters = " \a\b\f\n\r\t\v\1";
 
@@ -396,7 +396,7 @@ void Translator::init(unsigned id)
 		}
 }
 
-vector<Letter> sequence::from_string(const char* str, const Value_traits &vt)
+vector<Letter> Sequence::from_string(const char* str, const Value_traits &vt)
 {
 	vector<Letter> seq;
 	while (*str)
@@ -425,4 +425,11 @@ void Seed::enum_neighborhood(int treshold, vector<Seed>& out)
 {
 	out.clear();
 	enum_neighborhood(0, treshold, out, score(*this));
+}
+
+std::vector<Letter> Sequence::reverse() const {
+	std::vector<Letter> v;
+	v.reserve(len_);
+	std::reverse_copy(data(), end(), std::back_inserter(v));
+	return v;
 }

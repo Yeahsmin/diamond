@@ -110,6 +110,10 @@ void Config::set_sens(Sensitivity sens) {
 	sensitivity = sens;
 }
 
+std::string Config::single_query_file() const {
+	return query_file.empty() ? string() : query_file.front();
+}
+
 Config::Config(int argc, const char **argv, bool check_io)
 {
 	Command_line_parser parser;
@@ -151,8 +155,6 @@ Config::Config(int argc, const char **argv, bool check_io)
 #endif
 		;
 
-	string traceback_mode_str;
-
 	Options_group general("General options");
 	general.add()
 		("threads", 'p', "number of CPU threads", threads_)
@@ -175,7 +177,9 @@ Config::Config(int argc, const char **argv, bool check_io)
 \tsstart means Start of alignment in subject\n\
 \tsend means End of alignment in subject\n\
 \tqseq means Aligned part of query sequence\n\
+\tqseq_translated means Aligned part of query sequence (translated)\n\
 \tfull_qseq means Query sequence\n\
+\tfull_qseq_mate means Query sequence of the mate\n\
 \tsseq means Aligned part of subject sequence\n\
 \tfull_sseq means Subject sequence\n\
 \tevalue means Expect value\n\
@@ -284,6 +288,7 @@ Config::Config(int argc, const char **argv, bool check_io)
 		("freq-sd", 0, "number of standard deviations for ignoring frequent seeds", freq_sd, 0.0)
 		("id2", 0, "minimum number of identities for stage 1 hit", min_identities)
 		("xdrop", 'x', "xdrop for ungapped alignment", ungapped_xdrop, 12.3)
+		("gapped-filter-evalue", 0, "E-value threshold for gapped filter (auto)", gapped_filter_evalue, -1.0)
 		("band", 0, "band for dynamic programming computation", padding)
 		("shapes", 's', "number of seed shapes (default=all available)", shapes)
 		("shape-mask", 0, "seed shapes", shape_mask)
@@ -309,10 +314,8 @@ Config::Config(int argc, const char **argv, bool check_io)
 		("family-map", 0, "", family_map)
 		("family-map-query", 0, "", family_map_query)
 		("query-parallel-limit", 0, "", query_parallel_limit, 3000000u)
-		("target-indexed", 0, "", target_indexed)
-		("mmap-target-index", 0, "", mmap_target_index)
-		("save-target-index", 0, "", save_target_index)
-		("log-evalue-scale", 0, "", log_evalue_scale, 1.0/std::log(2.0));
+		("log-evalue-scale", 0, "", log_evalue_scale, 1.0 / std::log(2.0))
+		("bootstrap", 0, "", bootstrap);
 
 	Options_group view_options("View options");
 	view_options.add()
@@ -417,17 +420,16 @@ Config::Config(int argc, const char **argv, bool check_io)
 		("chaining-range-cover", 0, "", chaining_range_cover, (size_t)8)
 		("index-mode", 0, "index mode (0=4x12, 1=16x9)", index_mode)
 		("no-swipe-realign", 0, "", no_swipe_realign)
-		("bootstrap", 0, "", bootstrap)
 		("chaining-maxnodes", 0, "", chaining_maxnodes)
 		("cutoff-score-8bit", 0, "", cutoff_score_8bit, 240)
 		("min-band-overlap", 0, "", min_band_overlap, 0.2)
 		("min-realign-overhang", 0, "", min_realign_overhang, 30)
 		("ungapped-window", 0, "", ungapped_window, 48)
 		("gapped-filter-diag-score", 0, "", gapped_filter_diag_bit_score, 12.0)
-		("gapped-filter-evalue", 0, "", gapped_filter_evalue, -1.0)
 		("gapped-filter-window", 0, "", gapped_filter_window, 200)
 		("output-hits", 0, "", output_hits)
 		("ungapped-evalue", 0, "", ungapped_evalue, -1.0)
+		("ungapped-evalue-short", 0, "", ungapped_evalue_short, -1.0)
 		("no-logfile", 0, "", no_logfile)
 		("no-heartbeat", 0, "", no_heartbeat)
 		("band-bin", 0, "", band_bin, 24)
@@ -448,7 +450,6 @@ Config::Config(int argc, const char **argv, bool check_io)
 		("fast-tsv", 0, "", fast_tsv)
 		("target-parallel-verbosity", 0, "", target_parallel_verbosity, UINT_MAX)
 		("ext-targets", 0, "", global_ranking_targets)
-		("traceback-mode", 0, "", traceback_mode_str)
 		("query-memory", 0, "", query_memory)
 		("memory-intervals", 0, "", memory_intervals, (size_t)2)
 		("seed-hit-density", 0, "", seedhit_density)
@@ -471,16 +472,14 @@ Config::Config(int argc, const char **argv, bool check_io)
 		("deque_bucket_size", 0, "", deque_bucket_size, (size_t)524288)
 		("query-match-distance-threshold", 0, "", query_match_distance_threshold, -1.0)
 		("length-ratio-threshold", 0, "", length_ratio_threshold, -1.0)
-		("fast", 0, "", mode_fast);
+		("fast", 0, "", mode_fast)
+		("target-indexed", 0, "", target_indexed)
+		("mmap-target-index", 0, "", mmap_target_index)
+		("save-target-index", 0, "", save_target_index)
+		("max-swipe-dp", 0, "", max_swipe_dp, (size_t)4000000);
 	
 	parser.add(general).add(makedb).add(cluster).add(aligner).add(advanced).add(view_options).add(getseq_options).add(hidden_options).add(deprecated_options);
 	parser.store(argc, argv, command);
-
-	traceback_mode = set_string_option<TracebackMode>(traceback_mode_str, "--traceback-mode",
-		{ {"score", TracebackMode::SCORE_ONLY },
-		{"stat", TracebackMode::STAT},
-		{"vector", TracebackMode::VECTOR},
-		{"buffer", TracebackMode::SCORE_BUFFER} });
 
 	if (toppercent != 100.0 && max_alignments != 25)
 		throw std::runtime_error("--top and --max-target-seqs are mutually exclusive.");
@@ -488,8 +487,8 @@ Config::Config(int argc, const char **argv, bool check_io)
 	if (command == blastx && no_self_hits)
 		throw std::runtime_error("--no-self-hits option is not supported in blastx mode.");
 
-	if (command == blastx && (ext == "full" || swipe_all))
-		throw std::runtime_error("Full matrix extension is not supported in blastx mode.");
+	if (command == blastx && swipe_all)
+		throw std::runtime_error("Full db alignment is not supported in blastx mode.");
 
 	if (long_reads) {
 		query_range_culling = true;
@@ -499,7 +498,7 @@ Config::Config(int argc, const char **argv, bool check_io)
 			frame_shift = 15;
 	}
 
-	if (global_ranking_targets > 0 && (query_range_culling || taxon_k || multiprocessing || mp_init || (command == blastx) || comp_based_stats >= 2))
+	if (global_ranking_targets > 0 && (query_range_culling || taxon_k || multiprocessing || mp_init || (command == blastx) || comp_based_stats >= 2 || frame_shift > 0))
 		throw std::runtime_error("Global ranking is not supported in this mode.");
 
 	if (global_ranking_targets > 0) {
@@ -508,7 +507,11 @@ Config::Config(int argc, const char **argv, bool check_io)
 		ext = "full";
 	}
 
+#ifdef EXTRA
 	if (comp_based_stats >= Stats::CBS::COUNT)
+#else
+	if (comp_based_stats >= 5)
+#endif	
 		throw std::runtime_error("Invalid value for --comp-based-stats. Permitted values: 0, 1, 2, 3, 4.");
 
 	if (masking == -1)
@@ -536,6 +539,9 @@ Config::Config(int argc, const char **argv, bool check_io)
 
 	if (masking < 0 || masking > 1)
 		throw std::runtime_error("Permitted values for --masking: 0, 1");
+
+	if (frame_shift > 0 && ext == "full")
+		throw std::runtime_error("Frameshift alignment does not support full matrix extension.");
 
 	if (target_indexed)
 		hashed_seeds = true;
@@ -717,12 +723,9 @@ Config::Config(int argc, const char **argv, bool check_io)
 	if (algo == Config::query_indexed && (sensitivity == Sensitivity::MID_SENSITIVE || sensitivity >= Sensitivity::VERY_SENSITIVE))
 		throw std::runtime_error("Query-indexed mode is not supported for this sensitivity setting.");
 
-	set<string> ext_modes = { "", "banded-fast", "banded-slow" };
-#ifdef EXTRA
-	ext_modes.insert("full");
-#endif
+	const set<string> ext_modes = { "", "banded-fast", "banded-slow", "full" };
 	if (ext_modes.find(ext) == ext_modes.end())
-		throw std::runtime_error("Possible values for --ext are: banded-fast, banded-slow");
+		throw std::runtime_error("Possible values for --ext are: banded-fast, banded-slow, full");
 
 	Translator::init(query_gencode);
 

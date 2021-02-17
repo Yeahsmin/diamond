@@ -36,7 +36,7 @@ void mcl() {
 }
 
 void split() {
-	TextInputFile in(config.query_file.front());
+	TextInputFile in(config.single_query_file());
 	string id;
 	vector<Letter> seq;
 	size_t n = 0, f = 0, b = (size_t)(config.chunk_size * 1e9);
@@ -49,7 +49,7 @@ void split() {
 			n = 0;
 		}
 		string blast_id = ::blast_id(id);
-		Util::Sequence::format(sequence(seq), blast_id.c_str(), nullptr, *out, "fasta", amino_acid_traits);
+		Util::Seq::format(Sequence(seq), blast_id.c_str(), nullptr, *out, "fasta", amino_acid_traits);
 		n += seq.size();
 	}
 	out->close();

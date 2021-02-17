@@ -39,6 +39,7 @@ using std::list;
 using std::array;
 using std::pair;
 using std::endl;
+using std::move;
 
 namespace Extension {
 
@@ -62,7 +63,7 @@ size_t chunk_size_multiplier(const FlatArray<SeedHit>& seed_hits, int query_len)
 
 vector<Target> extend(const Parameters& params,
 	size_t query_id,
-	const sequence *query_seq,
+	const Sequence *query_seq,
 	int source_query_len,
 	const Bias_correction *query_cb,
 	const Stats::Composition& query_comp,
@@ -72,9 +73,10 @@ vector<Target> extend(const Parameters& params,
 	Statistics& stat,
 	int flags)
 {
+	static const size_t GAPPED_FILTER_MIN_QLEN = 85;
 	stat.inc(Statistics::TARGET_HITS2, target_block_ids.size());
 	task_timer timer(flags & DP::PARALLEL ? config.target_parallel_verbosity : UINT_MAX);
-	if (config.gapped_filter_evalue > 0.0 && config.global_ranking_targets == 0) {
+	if (config.gapped_filter_evalue > 0.0 && config.global_ranking_targets == 0 && (!align_mode.query_translated || query_seq[0].length() >= GAPPED_FILTER_MIN_QLEN)) {
 		timer.go("Computing gapped filter");
 		gapped_filter(query_seq, query_cb, seed_hits, target_block_ids, stat, flags, params);
 		if ((flags & DP::PARALLEL) == 0)
@@ -92,17 +94,17 @@ vector<Target> extend(const Parameters& params,
 
 vector<Match> extend(
 	size_t query_id,
-	const Parameters &params,
-	const Metadata &metadata,
-	Statistics &stat,
+	const Parameters& params,
+	const Metadata& metadata,
+	Statistics& stat,
 	int flags,
-	const FlatArray<SeedHit>& seed_hits,
-	const vector<uint32_t>& target_block_ids,
+	FlatArray<SeedHit>& seed_hits,
+	vector<uint32_t>& target_block_ids,
 	const vector<TargetScore>& target_scores)
 {
 	const unsigned UNIFIED_TARGET_LEN = 50;
 	const unsigned contexts = align_mode.query_contexts;
-	vector<sequence> query_seq;
+	vector<Sequence> query_seq;
 	vector<Bias_correction> query_cb;
 	const char* query_title = query_ids::get()[query_id];
 
@@ -110,7 +112,7 @@ vector<Match> extend(
 		log_stream << "Query=" << query_title << " Hits=" << seed_hits.data_size() << endl;
 
 	for (unsigned i = 0; i < contexts; ++i)
-		query_seq.push_back(query_seqs::get()[query_id*contexts + i]);
+		query_seq.push_back(query_seqs::get()[query_id * contexts + i]);
 	const unsigned query_len = (unsigned)query_seq.front().length();
 
 	task_timer timer(flags & DP::PARALLEL ? config.target_parallel_verbosity : UINT_MAX);
@@ -125,29 +127,32 @@ vector<Match> extend(
 		query_comp = Stats::composition(query_seq[0]);
 
 	const int source_query_len = align_mode.query_translated ? (int)query_source_seqs::get()[query_id].length() : (int)query_seqs::get()[query_id].length();
-	/*const int relaxed_cutoff = score_matrix.rawscore(config.min_bit_score == 0.0
-		? score_matrix.bitscore(config.max_evalue * config.relaxed_evalue_factor, (unsigned)query_seq[0].length())
-		: config.min_bit_score);*/
 	const size_t target_count = target_block_ids.size();
 	const size_t chunk_size = ranking_chunk_size(target_count);
 	vector<TargetScore>::const_iterator i0 = target_scores.cbegin(), i1 = std::min(i0 + chunk_size, target_scores.cend());
 
-	if (config.toppercent == 100.0) {
-		while (i1 < target_scores.cend() && score_matrix.evalue(i1->score, query_len, UNIFIED_TARGET_LEN) <= config.max_evalue) i1 += 16;
-		//while (i1 < target_scores.cend() && i1->score >= relaxed_cutoff && size_t(i1 - i0) < config.max_alignments) ++i1;
-	}
-
+	if (config.toppercent == 100.0 && config.min_bit_score == 0.0)
 #ifdef EVAL_TARGET
-	while (i1 < target_scores.cend() && i1->evalue <= config.max_evalue && size_t(i1 - i0) < config.max_alignments) ++i1;
+		while (i1 < target_scores.cend() && i1->evalue <= config.max_evalue && size_t(i1 - i0) < config.max_alignments) ++i1;
+#else
+		while (i1 < target_scores.cend() && score_matrix.evalue(i1->score, query_len, UNIFIED_TARGET_LEN) <= config.max_evalue) i1 += 16;
 #endif
+
 	const int low_score = config.query_memory ? memory->low_score(query_id) : 0;
 	const size_t previous_count = config.query_memory ? memory->count(query_id) : 0;
-	bool first_round_traceback = config.min_id > 0 || config.query_cover > 0 || config.subject_cover > 0;
+
+	if (config.min_id > 0)
+		flags |= DP::TRACEBACK;
+	else if (config.query_cover > 0 || config.subject_cover > 0) {
+		if (config.ext == "full")
+			flags |= DP::WITH_COORDINATES;
+		else
+			flags |= DP::TRACEBACK;
+	}
+
 	//size_t multiplier = 1;
 	int tail_score = 0;
-	if (first_round_traceback)
-		flags |= DP::TRACEBACK;
-	TLS_FIX_S390X FlatArray<SeedHit> seed_hits_chunk;
+	thread_local FlatArray<SeedHit> seed_hits_chunk;
 	thread_local vector<uint32_t> target_block_ids_chunk;
 
 	vector<Target> aligned_targets;
@@ -159,27 +164,22 @@ vector<Match> extend(
 		if (config.query_memory && memory->ranking_failed_count(query_id) >= chunk_size && memory->ranking_low_score(query_id) >= i0->score)
 			break;
 
-		if (multi_chunk) {
+		if (multi_chunk)
 			for (vector<TargetScore>::const_iterator j = i0; j < i1; ++j) {
 				target_block_ids_chunk.push_back(target_block_ids[j->target]);
 				seed_hits_chunk.push_back(seed_hits.begin(j->target), seed_hits.end(j->target));
 			}
-		}
-		else {
-			target_block_ids_chunk = TLS_FIX_S390X_MOVE(target_block_ids);
-			seed_hits_chunk = TLS_FIX_S390X_MOVE(seed_hits);
-		}
 
 		//multiplier = std::max(multiplier, chunk_size_multiplier(seed_hits_chunk, (int)query_seq.front().length()));
 
-		vector<Target> v = extend(params, query_id, query_seq.data(), source_query_len, query_cb.data(), query_comp, seed_hits_chunk, target_block_ids_chunk, metadata, stat, flags);
+		vector<Target> v = extend(params, query_id, query_seq.data(), source_query_len, query_cb.data(), query_comp, multi_chunk ? seed_hits_chunk : seed_hits, multi_chunk ? target_block_ids_chunk : target_block_ids, metadata, stat, flags);
 		const size_t n = v.size();
 		stat.inc(Statistics::TARGET_HITS4, v.size());
 		bool new_hits = false;
 		if (multi_chunk)
 			new_hits = append_hits(aligned_targets, v.begin(), v.end(), chunk_size, source_query_len, query_title, query_seq.front());
 		else
-			aligned_targets = TLS_FIX_S390X_MOVE(v);
+			aligned_targets = move(v);
 
 		if (n == 0 || !new_hits) {
 			if (config.query_memory && current_chunk_size >= chunk_size)
@@ -208,7 +208,7 @@ vector<Match> extend(
 	stat.inc(Statistics::TARGET_HITS5, aligned_targets.size());
 	timer.finish();
 
-	vector<Match> matches = align(aligned_targets, query_seq.data(), query_cb.data(), source_query_len, flags, stat, first_round_traceback);
+	vector<Match> matches = align(aligned_targets, query_seq.data(), query_cb.data(), source_query_len, flags, stat);
 	std::sort(matches.begin(), matches.end(), config.toppercent == 100.0 ? Match::cmp_evalue : Match::cmp_score);
 	return matches;
 }
@@ -216,7 +216,7 @@ vector<Match> extend(
 vector<Match> extend(const Parameters &params, size_t query_id, hit* begin, hit* end, const Metadata &metadata, Statistics &stat, int flags) {	
 	task_timer timer(flags & DP::PARALLEL ? config.target_parallel_verbosity : UINT_MAX);
 	timer.go("Loading seed hits");
-	TLS_FIX_S390X FlatArray<SeedHit> seed_hits;
+	thread_local FlatArray<SeedHit> seed_hits;
 	thread_local vector<uint32_t> target_block_ids;
 	thread_local vector<TargetScore> target_scores;
 	load_hits(begin, end, seed_hits, target_block_ids, target_scores, (unsigned)query_seqs::get()[query_id * align_mode.query_contexts].length());

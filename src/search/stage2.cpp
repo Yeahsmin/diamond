@@ -40,6 +40,28 @@ using std::vector;
 namespace Search {
 namespace DISPATCH_ARCH {
 
+static const int SHORT_QUERY_LEN = 85;
+
+static int ungapped_cutoff(int query_len, const Context& context) {
+#ifdef UNGAPPED_SPOUGE
+	return query_len > config.short_query_max_len ? context.cutoff_table(query_len, 50) : context.short_query_ungapped_cutoff;
+#else
+	if (query_len <= config.short_query_max_len)
+		return context.short_query_ungapped_cutoff;
+	else if (query_len <= SHORT_QUERY_LEN && align_mode.query_translated)
+		return context.cutoff_table_short(query_len);
+	else
+		return context.cutoff_table(query_len);
+#endif
+}
+
+static int ungapped_window(int query_len) {
+	if (query_len <= SHORT_QUERY_LEN && align_mode.query_translated)
+		return query_len;
+	else
+		return config.ungapped_window;
+}
+
 void search_query_offset(uint64_t q,
 	const Packed_loc* s,
 	const uint32_t *hits,
@@ -59,18 +81,15 @@ void search_query_offset(uint64_t q,
 	int scores[N];
 	std::fill(scores, scores + N, INT_MAX);
 
-	const sequence query_clipped = Util::Sequence::clip(query - config.ungapped_window, config.ungapped_window * 2, config.ungapped_window);
-	const int window_left = int(query - query_clipped.data()), window = (int)query_clipped.length();
 	unsigned query_id = UINT_MAX, seed_offset = UINT_MAX;
 	std::pair<size_t, size_t> l = query_seqs::data_->local_position(q);
 	query_id = (unsigned)l.first;
 	seed_offset = (unsigned)l.second;
 	const int query_len = query_seqs::data_->length(query_id);
-#ifdef UNGAPPED_SPOUGE
-	const int score_cutoff = query_len > config.short_query_max_len ? context.cutoff_table(query_len, 50) : context.short_query_ungapped_cutoff;
-#else
-	const int score_cutoff = query_len > config.short_query_max_len ? context.cutoff_table(query_len) : context.short_query_ungapped_cutoff;
-#endif
+	const int score_cutoff = ungapped_cutoff(query_len, context);
+	const int window = ungapped_window(query_len);
+	const Sequence query_clipped = Util::Seq::clip(query - window, window * 2, window);
+	const int window_left = int(query - query_clipped.data()), window_clipped = (int)query_clipped.length();
 	size_t hit_count = 0;
 
 	const int interval_mod = config.left_most_interval > 0 ? seed_offset % config.left_most_interval : window_left, interval_overhang = std::max(window_left - interval_mod, 0);
@@ -80,7 +99,7 @@ void search_query_offset(uint64_t q,
 		const size_t n = std::min(N, hits_end - i);
 		for (size_t j = 0; j < n; ++j)
 			subjects[j] = ref_seqs::data_->data(s[*(i + j)]) - window_left;
-		DP::window_ungapped_best(query_clipped.data(), subjects, n, window, scores);
+		DP::window_ungapped_best(query_clipped.data(), subjects, n, window_clipped, scores);
 
 		for (size_t j = 0; j < n; ++j) {
 			if (scores[j] > score_cutoff) {
@@ -150,7 +169,7 @@ struct Stage2 {
 
 typedef vector<Finger_print, Util::Memory::AlignmentAllocator<Finger_print, 16>> Container;
 
-static void load_fps(const Packed_loc* p, size_t n, Container& v, const Sequence_set& seqs)
+static void load_fps(const Packed_loc* p, size_t n, Container& v, const SequenceSet& seqs)
 {
 	v.clear();
 	v.reserve(n);
